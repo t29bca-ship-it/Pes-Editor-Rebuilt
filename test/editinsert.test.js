@@ -8,11 +8,28 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const src = fs.readFileSync(path.join(__dirname, '..', 'js', 'app.js'), 'utf8');
+const csv = require('./load').load('pes20csv.js', 'Pes20Csv');
 const grab = re => { const m = src.match(re); assert.ok(m, 'falta en app.js: ' + re); return m[0]; };
 const code = [
   grab(/const POS_TO_PP = [^\n]*\n/), grab(/const BODY = [^\n]*\n/), grab(/const DB_ABIL = [^\n]*\n/),
   grab(/const DB_POSFLAG = [^\n]*\n/), grab(/let DBRAW = null, DBSIG = .*;[\s\S]*?\nasync function namesFromBin/).replace(/\nasync function namesFromBin$/, '\n'),
 ].join('');
+const csvInsertStart = src.indexOf('function p20InsertCsvPlayers('), csvImportStart = src.indexOf('async function p20ImportCsv(', csvInsertStart);
+assert.ok(csvInsertStart >= 0 && csvImportStart > csvInsertStart, 'falta p20InsertCsvPlayers en app.js');
+const csvInsertCode = src.slice(csvInsertStart, csvImportStart);
+const csvPlayerApplyStart = src.indexOf('function p20ApplyCsvPlayerFields(');
+assert.ok(csvPlayerApplyStart >= 0 && csvImportStart > csvPlayerApplyStart, 'falta p20ApplyCsvPlayerFields en app.js');
+const csvPlayerApplyCode = src.slice(csvPlayerApplyStart, csvImportStart);
+const teamCode = [
+  grab(/const ORD = [^\n]*\n/), grab(/const getOrder = [^\n]*\n/), grab(/const setOrder = [^\n]*\n/),
+  grab(/function vacate\(t, slot\) \{[\s\S]*?\n\}/), grab(/function rosterRemove\(t, slot, auto = false\) \{[\s\S]*?\n\}/),
+].join('');
+const transferStart = src.indexOf('function p20RemoveRosterMembership(');
+assert.ok(transferStart >= 0 && csvImportStart > transferStart, 'falta p20RemoveRosterMembership en app.js');
+const transferCode = src.slice(transferStart, csvImportStart);
+const csvFlowStart = src.indexOf('function p20CsvRecords('), csvFlowEnd = src.indexOf('\nfunction fillLazySelect(', csvImportStart);
+assert.ok(csvFlowStart >= 0 && csvFlowEnd > csvImportStart, 'falta el flujo completo de importación CSV en app.js');
+const csvFlowCode = src.slice(csvFlowStart, csvFlowEnd);
 const PD = vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'js', 'pesdata.js'), 'utf8') + '\n;PesData', vm.createContext({ TextDecoder, TextEncoder }));
 const toasts = [], hist = [];
 const ctx = vm.createContext({
@@ -24,6 +41,8 @@ vm.runInContext(code + `
 pget = (p, k) => PD.player.get(S.d, p.base, k);
 const setBits = (b, o, pos, n, v) => { for (let i = 0; i < n; i++) { const q = pos + i, m = 1 << (q & 7); if ((v >> i) & 1) b[o + (q >> 3)] |= m; else b[o + (q >> 3)] &= ~m; } };
 ;`, ctx);
+vm.runInContext(csvInsertCode, ctx);
+vm.runInContext(teamCode + csvPlayerApplyCode + transferCode, ctx);
 const run = s => vm.runInContext(s, ctx);
 
 // base con un jugador (id 7001): mediocampista con A en MC y MCD, B en MO; zurdo; arquero con valores distintos en cada habilidad
@@ -56,6 +75,230 @@ test('al agregar un jugador de la base al EDIT van sus posiciones, el pie y el p
   for (const [k, v] of Object.entries(gkDb)) assert.equal(g(k), v, k);
   // sin PlayerAppearance.bin: cuerpo normal (7 = 0 en el juego), nunca 0 (= -7)
   for (const [k] of run('BODY')) assert.equal(g(k), 7, k);
+});
+
+test('importar jugadores CSV agrega IDs ausentes manteniendo los registros ordenados', () => {
+  const R = 0x138, d = new Uint8Array(0x7C + 3 * R);
+  d[96] = 2;
+  for (const [i, id] of [100, 300].entries()) d.set([id & 255, id >> 8, 0, 0], 0x7C + i * R);
+  ctx.S = { d, f: { game: '2021' }, ix: null };
+  run('S.ix = PD.index(S.d, S.f.game)');
+  assert.equal(run('p20InsertCsvPlayers([{id: 200}])'), 1);
+  assert.deepEqual([...run('S.ix.players.map(p => p.id)')], [100, 200, 300]);
+  const base = run('S.ix.byId.get(200).base');
+  assert.equal((d[base + 0xF0] | d[base + 0xF1] << 8 | d[base + 0xF2] << 16 | d[base + 0xF3] << 24) >>> 0, 200);
+  assert.equal(PD.player.get(d, base, 'head_len'), 7);
+});
+
+test('importar una plantilla mueve jugadores y quita las convocatorias que el CSV no especifica', () => {
+  const d = new Uint8Array(0x2000), oldTeam = {
+    id: 300, name: 'Al Kuwait SC', national: false, rosterBase: 0x100, tacticsBase: 0x600,
+  }, secondOldTeam = {
+    id: 301, name: 'Another Club', national: false, rosterBase: 0x220, tacticsBase: 0x900,
+  }, destination = {
+    id: 500, name: 'Cong An Ha Noi', national: false, rosterBase: 0x340, tacticsBase: 0xC00,
+  }, national = {
+    id: 17, name: 'Kuwait', country: 17, national: true, rosterBase: 0x460, tacticsBase: 0xF00,
+  };
+  ctx.S = { d, f: { game: '2021' }, ix: { teams: [oldTeam, secondOldTeam, destination, national] } };
+  run('tget = (t, k) => t[k]; isNat = t => t.national');
+  for (let slot = 0; slot < 13; slot++) {
+    PD.setRosterPlayer(d, oldTeam, slot, 1000 + slot);
+    PD.setRosterPlayer(d, secondOldTeam, slot, 2000 + slot);
+    PD.setNumber(d, oldTeam, slot, slot + 1);
+    PD.setNumber(d, secondOldTeam, slot, slot + 1);
+  }
+  // The target has duplicate club memberships, like a player accidentally left in two clubs.
+  PD.setRosterPlayer(d, oldTeam, 12, 1012);
+  PD.setRosterPlayer(d, secondOldTeam, 12, 1012);
+  PD.setRosterPlayer(d, national, 0, 1012);
+  for (const t of [oldTeam, secondOldTeam, destination, national]) {
+    d.set(Array.from({ length: 40 }, (_, i) => i), t.tacticsBase + 0x1E4);
+    PD.setCaptainSlot(d, t, 0);
+  }
+  ctx.DEST = destination;
+  const transfer = run("p20StagePlayerRosterChanges(DEST, [{id: 1012, fields: {nation: 17}}])");
+  assert.equal(transfer.count, 3);
+  assert.equal(PD.roster(transfer.data, oldTeam).some(x => x.pid === 1012), false);
+  assert.equal(PD.roster(transfer.data, secondOldTeam).some(x => x.pid === 1012), false);
+  assert.ok(PD.roster(d, oldTeam).some(x => x.pid === 1012), 'la etapa de confirmación no modifica el EDIT original');
+  assert.ok(PD.roster(d, secondOldTeam).some(x => x.pid === 1012), 'la etapa de confirmación no modifica los otros clubes originales');
+  ctx.TRANS = transfer;
+  run('p20ApplyPlayerRosterChanges(TRANS)');
+  PD.setRosterPlayer(d, destination, 0, 1012);
+  assert.equal(PD.roster(d, oldTeam).filter(x => x.pid === 1012).length, 0);
+  assert.equal(PD.roster(d, secondOldTeam).filter(x => x.pid === 1012).length, 0);
+  assert.equal(PD.roster(d, destination).filter(x => x.pid === 1012).length, 1);
+  assert.equal(PD.roster(d, national).some(x => x.pid === 1012), false, 'el CSV de jugadores no contiene una selección nacional');
+  assert.equal(PD.roster(d, oldTeam).length, 12);
+  assert.equal(PD.roster(d, oldTeam)[11].number, 12);
+  assert.deepEqual([...PD.tacticalOrder(d, oldTeam)], Array.from({ length: 40 }, (_, i) => i));
+});
+
+test('p20ImportCsv applies Country, clears absent national-team assignments and remains undoable', async () => {
+  const d = new Uint8Array(0x1200), oldTeam = {
+    id: 300, name: 'Al Kuwait SC', country: 17, rosterBase: 0x100, tacticsBase: null,
+  }, secondOldTeam = {
+    id: 301, name: 'Another Club', country: 17, rosterBase: 0x300, tacticsBase: null,
+  }, destination = {
+    id: 500, name: 'Cong An TP. Ho Chi Minh', country: 38, rosterBase: 0x500, tacticsBase: null,
+  }, national = {
+    id: 17, name: 'Kuwait', country: 17, rosterBase: 0x700, tacticsBase: null,
+  }, vietnam = {
+    id: 18, name: 'Vietnam', country: 38, rosterBase: 0x900, tacticsBase: null,
+  };
+  d[96] = 1;
+  PD.player.set(d, 0x7C, 'id', 1012);
+  PD.player.set(d, 0x7C, 'comm_id', 1012);
+  PD.player.set(d, 0x7C, 'nation', 17);
+  PD.player.set(d, 0x7C, 'name', 'Alan Shearer');
+  for (let slot = 0; slot < 13; slot++) {
+    PD.setRosterPlayer(d, oldTeam, slot, 1000 + slot);
+    PD.setRosterPlayer(d, secondOldTeam, slot, 2000 + slot);
+    PD.setNumber(d, oldTeam, slot, slot + 1);
+    PD.setNumber(d, secondOldTeam, slot, slot + 1);
+  }
+  PD.setRosterPlayer(d, oldTeam, 12, 1012);
+  PD.setRosterPlayer(d, secondOldTeam, 12, 1012);
+  PD.setRosterPlayer(d, secondOldTeam, 13, 3030);
+  PD.setRosterPlayer(d, national, 0, 1012);
+  PD.setRosterPlayer(d, vietnam, 0, 1012);
+  const index = PD.index(d, '2021');
+  index.teams = [oldTeam, secondOldTeam, destination, national, vietnam];
+  index.teamById = new Map(index.teams.map(team => [team.id, team]));
+  const row = new Array(csv.PLAYER_HEAD.length).fill('0');
+  row[csv.PLAYER_HEAD.indexOf('Id')] = '1012';
+  row[csv.PLAYER_HEAD.indexOf('Name')] = 'Alan Shearer';
+  row[csv.PLAYER_HEAD.indexOf('Shirt')] = '20';
+  row[csv.PLAYER_HEAD.indexOf('Country')] = '38';
+  const file = {
+    name: 'Jugadores - Cong An TP. Ho Chi Minh.csv',
+    text: async () => csv.file(csv.PLAYER_HEAD, [row]),
+  };
+  ctx.FILE = file;
+  const commits = [];
+  ctx.S = { d, f: { game: '2021', desc: new Uint8Array(0), serial: new Uint8Array(0) }, ix: index,
+    hist: [], hp: 0, savedHp: 0, fplan: 0, fvar: 0 };
+  ctx.Pes20Csv = csv;
+  ctx.edit = (label, key, regions, apply) => {
+    const before = regions.map(([offset, length]) => [offset, d.slice(offset, offset + length)]);
+    const result = apply();
+    const after = regions.map(([offset, length]) => [offset, d.slice(offset, offset + length)]);
+    commits.push({ label, regions, before, after });
+    ctx.S.hist.push(commits.at(-1)); ctx.S.hp++;
+    return result;
+  };
+  ctx.confirmBox = async () => true;
+  ctx.tget = (team, key) => team[key];
+  ctx.isNat = team => team.id < 100;
+  ctx.sameTeamName = (a, b) => a.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase() === b.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  ctx.regT = team => [[team.rosterBase, 0x11C]];
+  ctx.editPlayersRegion = extra => [[96, 2], [0x7C, (d[96] + (d[97] << 8) + extra) * 0x138]];
+  ctx.rebuildTeamOf = () => {};
+  ctx.render = () => {};
+  ctx.toast = () => {};
+  vm.runInContext(csvFlowCode, ctx);
+
+  await run("p20ImportCsv(FILE, 'jugadores')");
+
+  const clubRosters = [oldTeam, secondOldTeam, destination].map(team => PD.roster(d, team));
+  assert.equal(clubRosters[0].filter(player => player.pid === 1012).length, 0);
+  assert.equal(clubRosters[1].filter(player => player.pid === 1012).length, 0);
+  assert.equal(clubRosters[2].filter(player => player.pid === 1012).length, 1);
+  assert.equal(PD.roster(d, national).filter(player => player.pid === 1012).length, 0);
+  assert.equal(PD.roster(d, vietnam).filter(player => player.pid === 1012).length, 0);
+  assert.equal(PD.player.get(d, 0x7C, 'nation'), 38);
+  assert.equal(PD.player.get(d, 0x7C, 'shirt'), '20');
+  assert.equal(commits.length, 1);
+  assert.ok(commits[0].regions.some(([offset]) => offset === oldTeam.rosterBase));
+  assert.ok(commits[0].regions.some(([offset]) => offset === secondOldTeam.rosterBase));
+  assert.ok(commits[0].regions.some(([offset]) => offset === destination.rosterBase));
+
+  const beforeRejectedImport = d.slice();
+  ctx.FILE = { name: 'Jugadores - Kuwait.csv', text: async () => csv.file(csv.PLAYER_HEAD, [row]) };
+  await run("p20ImportCsv(FILE, 'jugadores')");
+  assert.deepEqual([...d], [...beforeRejectedImport], 'la selección de destino incompatible se rechaza sin cambios');
+  assert.equal(commits.length, 1);
+
+  for (const [offset, bytes] of commits[0].before) d.set(bytes, offset);
+  assert.equal(PD.roster(d, oldTeam).filter(player => player.pid === 1012).length, 1);
+  assert.equal(PD.roster(d, secondOldTeam).filter(player => player.pid === 1012).length, 1);
+  assert.equal(PD.roster(d, destination).filter(player => player.pid === 1012).length, 0);
+  assert.equal(PD.roster(d, national).filter(player => player.pid === 1012).length, 1);
+  assert.equal(PD.roster(d, vietnam).filter(player => player.pid === 1012).length, 1);
+  assert.equal(PD.player.get(d, 0x7C, 'nation'), 17);
+
+  const assignmentsRow = ['1012', 'Alan Shearer', '500', destination.name, '0', ''];
+  ctx.FILE = { name: 'Equipos-Jugadores.csv', text: async () => csv.file(csv.TP_HEAD, [assignmentsRow]) };
+  await run("p20ImportCsv(FILE, 'asignaciones')");
+  assert.equal(PD.roster(d, oldTeam).filter(player => player.pid === 1012).length, 0);
+  assert.equal(PD.roster(d, secondOldTeam).filter(player => player.pid === 1012).length, 0);
+  assert.equal(PD.roster(d, destination).filter(player => player.pid === 1012).length, 1);
+  assert.equal(PD.roster(d, national).filter(player => player.pid === 1012).length, 0);
+  assert.equal(PD.roster(d, vietnam).filter(player => player.pid === 1012).length, 0);
+  assert.ok(PD.roster(d, secondOldTeam).some(player => player.pid === 3030), 'un jugador ausente del CSV queda intacto');
+  assert.equal(commits.length, 2);
+  assert.ok(commits[1].regions.some(([offset]) => offset === oldTeam.rosterBase));
+  assert.ok(commits[1].regions.some(([offset]) => offset === secondOldTeam.rosterBase));
+  assert.ok(commits[1].regions.some(([offset]) => offset === destination.rosterBase));
+  assert.ok(commits[1].regions.some(([offset]) => offset === national.rosterBase));
+
+  for (const [offset, bytes] of commits[1].before) d.set(bytes, offset);
+  assert.equal(PD.roster(d, oldTeam).filter(player => player.pid === 1012).length, 1);
+  assert.equal(PD.roster(d, secondOldTeam).filter(player => player.pid === 1012).length, 1);
+  assert.equal(PD.roster(d, destination).filter(player => player.pid === 1012).length, 0);
+  assert.equal(PD.roster(d, national).filter(player => player.pid === 1012).length, 1);
+  assert.equal(PD.roster(d, vietnam).filter(player => player.pid === 1012).length, 1);
+
+  const beforeWrongCountry = d.slice();
+  ctx.FILE = { name: 'Equipos-Jugadores.csv', text: async () => csv.file(csv.TP_HEAD, [
+    ['1012', 'Alan Shearer', '0', '', '18', vietnam.name],
+  ]) };
+  await run("p20ImportCsv(FILE, 'asignaciones')");
+  assert.deepEqual([...d], [...beforeWrongCountry], 'la selección de otro país se rechaza sin cambios');
+  assert.equal(commits.length, 2);
+
+  const beforeMissingColumn = d.slice();
+  ctx.FILE = { name: 'Asignaciones-incompletas.csv', text: async () => csv.file(csv.TP_HEAD.slice(0, -1), [assignmentsRow.slice(0, -1)]) };
+  await run("p20ImportCsv(FILE, 'asignaciones')");
+  assert.deepEqual([...d], [...beforeMissingColumn], 'un CSV sin columna no toca el EDIT');
+  assert.equal(commits.length, 2);
+
+  const beforeBlankAssignment = d.slice();
+  ctx.FILE = { name: 'Asignaciones-vacias.csv', text: async () => csv.file(csv.TP_HEAD, [
+    ['1012', 'Alan Shearer', '0', '', '', ''],
+  ]) };
+  await run("p20ImportCsv(FILE, 'asignaciones')");
+  assert.deepEqual([...d], [...beforeBlankAssignment], 'un valor vacío no se interpreta como 0 y no limpia la membresía');
+  assert.equal(commits.length, 2);
+
+  ctx.FILE = { name: 'Equipos-Jugadores.csv', text: async () => csv.file(csv.TP_HEAD, [
+    ['1012', 'Alan Shearer', '0', '', '17', national.name],
+  ]) };
+  await run("p20ImportCsv(FILE, 'asignaciones')");
+  assert.equal(PD.roster(d, oldTeam).filter(player => player.pid === 1012).length, 0);
+  assert.equal(PD.roster(d, secondOldTeam).filter(player => player.pid === 1012).length, 0);
+  assert.equal(PD.roster(d, national).filter(player => player.pid === 1012).length, 1);
+  assert.equal(PD.roster(d, vietnam).filter(player => player.pid === 1012).length, 0);
+  assert.ok(PD.roster(d, secondOldTeam).some(player => player.pid === 3030));
+  assert.equal(commits.length, 3);
+  for (const [offset, bytes] of commits[2].before) d.set(bytes, offset);
+  assert.equal(PD.roster(d, oldTeam).filter(player => player.pid === 1012).length, 1);
+  assert.equal(PD.roster(d, secondOldTeam).filter(player => player.pid === 1012).length, 1);
+  assert.equal(PD.roster(d, national).filter(player => player.pid === 1012).length, 1);
+  assert.equal(PD.roster(d, vietnam).filter(player => player.pid === 1012).length, 1);
+});
+
+test('importar campos CSV cambia la nacionalidad sin alterar los IDs del jugador', () => {
+  const d = new Uint8Array(0x138);
+  ctx.S = { d, f: { game: '2021' } };
+  PD.player.set(d, 0, 'id', 1012);
+  PD.player.set(d, 0, 'comm_id', 77);
+  run('p20ApplyCsvPlayerFields({base: 0}, {id: 1012, comm_id: 999, nation: 38, e_basic: 1})');
+  assert.equal(PD.player.get(d, 0, 'id'), 1012);
+  assert.equal(PD.player.get(d, 0, 'comm_id'), 77);
+  assert.equal(PD.player.get(d, 0, 'nation'), 38);
+  assert.equal(PD.player.get(d, 0, 'e_basic'), 1);
 });
 
 test('con PlayerAppearance.bin, el físico y la apariencia se copian tal cual', async () => {

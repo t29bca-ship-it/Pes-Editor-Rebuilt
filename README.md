@@ -37,6 +37,8 @@ Because editing PES has always been part of the game: fixing squads, changing yo
 
 ### 📁 Game file and folder
 - **Finds the EDIT on its own.** It looks for `KONAMI\eFootball PES 2021 SEASON UPDATE` in your Documents folder and opens the most recent `EDIT00000000` (the one in the `drmp` folder first).
+- **Football Life 2027 EDIT support.** Load your local `FL_key.bin` with **Load FL27 key**, then open and save FL27 `EDIT00000000` files. The key stays in memory only until you close or reload the editor.
+- **Import exported player and team CSVs.** Team CSVs update matching IDs. A player squad CSV named `Jugadores - Team name.csv` updates existing players, adds missing IDs, and replaces that team's roster while keeping names from the CSV. Imports can be undone.
 - **Also as a Windows program.** [PES Editor Rebuilt for Windows](https://github.com/Agustinioquino/Pes-Editor-Rebuilt/releases/download/v0.045-alpha/PES-Editor-Rebuilt-Setup.exe) is the same editor in its own window, and it connects the Sider folder even when it's inside `C:\Program Files (x86)`, where Chrome and Edge can't write. It updates itself, just like the web page.
 - **You pick the folder only once.** With "Allow on every visit", next time it goes straight in.
 - **Several EDITs.** *File* shows every EDIT found (`drmp`, `save`, other Steam accounts) and you can switch between them.
@@ -246,6 +248,8 @@ Porque editar el PES siempre fue parte del juego: corregir planteles, cambiar el
 
 ### 📁 Archivo y carpeta del juego
 - **Encuentra el EDIT solo.** Busca `KONAMI\eFootball PES 2021 SEASON UPDATE` en tu carpeta Documentos y abre el `EDIT00000000` más reciente (primero el de la carpeta `drmp`).
+- **EDIT de Football Life 2027.** Carga tu `FL_key.bin` local con **Cargar clave FL27** y abre y guarda archivos `EDIT00000000` de FL27, con el layout de equipos basado en PES 2021. La clave queda solo en memoria hasta cerrar o recargar el editor.
+- **Importar CSV de jugadores y equipos.** El CSV de equipos actualiza los ID coincidentes. El CSV de plantel `Jugadores - Nombre del equipo.csv` actualiza jugadores existentes, agrega los ID que faltan y reemplaza el plantel de ese equipo, conservando los nombres del CSV. La importación se puede deshacer.
 - **También como programa para Windows.** [PES Editor Rebuilt para Windows](https://github.com/Agustinioquino/Pes-Editor-Rebuilt/releases/download/v0.045-alpha/PES-Editor-Rebuilt-Setup.exe) es el mismo editor en su propia ventana, y conecta la carpeta Sider aunque esté dentro de `C:\Program Files (x86)`, donde Chrome y Edge no dejan escribir. Se actualiza solo, igual que la página.
 - **Elegís la carpeta una sola vez.** Con "Permitir en cada visita", las veces siguientes entra directo.
 - **Varios EDIT.** En *Archivo* se ven todos los EDIT encontrados (`drmp`, `save`, otras cuentas de Steam) y podés cambiar de uno a otro.

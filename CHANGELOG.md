@@ -2,6 +2,48 @@
 
 Todos los cambios de PES Editor Rebuilt. La misma lista está en la pestaña **Novedades** del editor.
 
+## v0.075 alpha · Asignaciones y selecciones nacionales desde CSV
+
+- **CSV Equipos-Jugadores**. Ahora se pueden importar las columnas `Id Club` e `Id National`: un ID de equipo asigna la pertenencia y `0` la quita. Solo cambian los jugadores listados; se puede deshacer toda la operación.
+- **CSV de jugadores**. Como ese formato no tiene columna de selección nacional, cada jugador importado se quita de todas las convocatorias; solo se conserva/asigna una selección cuando el archivo de plantel identifica explícitamente una selección como destino. La nacionalidad de cada jugador debe coincidir con la selección de destino. Las convocatorias de jugadores no listados no cambian.
+
+## v0.074 alpha · Importar planteles como transferencias
+
+- **Planteles por CSV**. Al importar un plantel de club, cada jugador del archivo sale de todos sus otros clubes y pasa al plantel elegido; sus convocatorias nacionales se conservan. Se mantienen los datos de nacionalidad del CSV y todos los cambios de plantel se pueden deshacer. Ahora la prueba recorre la importación CSV completa, incluidos IDs repetidos en varios clubes, no solo el helper de transferencia.
+
+## Sin publicar · Importar planteles con tácticas alternativas
+
+- **Importación de jugadores**. La asignación de titulares usa la variante seleccionada del plan; los roles de otras variantes ya no bloquean la importación. Si faltan candidatos, el error identifica el puesto, rol y cantidad disponible.
+
+## Sin publicar · Bloquear planteles con titulares vacíos
+
+- **Importación de jugadores**. Si la plantilla del CSV no puede llenar todas las posiciones titulares, o la táctica repite un slot del 11 inicial, el editor cancela la importación antes de modificar el EDIT. Así no se guarda un equipo con posiciones sin jugador.
+
+## Sin publicar · Asignación global de titulares al importar CSV
+
+- **Planteles por CSV**. La asignación busca una combinación completa para los puestos titulares en vez de asignar de forma codiciosa puesto por puesto. Así un jugador con varias posiciones no ocupa primero un slot que otro jugador solo puede cubrir; si no existe una combinación segura, no se modifica el EDIT.
+
+## Sin publicar · Importar planteles sin desordenar los titulares
+
+- **Planteles por CSV**. Los jugadores nuevos ocupan los titulares vacantes según la posición de cada puesto táctico; los demás se asignan al banco. Los jugadores ya coincidentes por ID conservan su slot. Si no se puede ubicar todo el CSV sin asignaciones incompatibles, la importación se cancela antes de modificar el EDIT.
+
+## Sin publicar · Edición de planteles y tácticas
+
+- **Referencias tácticas al editar planteles** (Plantel). Al quitar o trasladar jugadores se actualizan las referencias de titulares, suplentes y lanzadores. Agregar jugadores no altera el 11 titular.
+
+## Corrección de guardado de EDIT
+
+- Se eliminó la reparación automática de tácticas al abrir el EDIT y la reescritura de tácticas al importar un plantel completo. Al agregar un jugador, solo se asigna un espacio de suplente, sin alterar los 11 titulares.
+
+## Sin publicar · Importar planteles con jugadores nuevos
+
+- **Importar CSV por separado** (Archivo). El CSV del equipo actualiza sus datos por ID. El CSV de plantel `Jugadores - Nombre del equipo.csv` agrega a EDIT los jugadores que faltan, actualiza por ID también los nombres modificados y reemplaza la plantilla del equipo; se puede deshacer toda la operación. Se actualizó la caché del navegador.
+
+## Sin publicar · EDIT de Football Life 2027
+
+- **Abrir y guardar EDIT de FL27** (Archivo). El editor carga `FL_key.bin` desde tu equipo, solo en memoria, y usa el layout de equipos basado en PES 2021. La clave no se guarda en el editor.
+- **Volver a importar CSV** (Archivo). Importa los CSV exportados de jugadores o equipos, actualiza solo los ID ya presentes en el EDIT y permite deshacer.
+
 ## v0.063 alpha · Fuentes para el Sider de otra persona
 
 *19 de octubre de 2026, 16:35 (hora de Argentina)*

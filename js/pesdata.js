@@ -1,4 +1,4 @@
-// PES 2020/2021 EDIT data layout — port of 4ccEditor (zlib license, the4chancup)
+// PES 2020/2021 and Football Life 2027 EDIT data layout — port of 4ccEditor (zlib license, the4chancup)
 const PesData = (() => {
   // Player entry: sequence of [key, startBit, bits] or ['skip', bytes] or ['str', key, bytes]
   const P = [
@@ -36,6 +36,7 @@ const PesData = (() => {
   const LAYOUT = {
     '2021': { teamSize: 0x24C, roster: 0x9D4648, tactics: 0xA09880 },
     '2020': { teamSize: 0x210, roster: 0x9ccc04, tactics: 0xa01e3c },
+    FL27: { teamSize: 0x24C, roster: 0x9D4648, tactics: 0xA09880 },
   };
   // Team entry fields (relative)
   const T = [
@@ -124,11 +125,46 @@ const PesData = (() => {
     }
     return out;
   }
+  const TACTICS_ORDER = 0x1E4;
+  function tacticalOrder(d, t) {
+    if (t.tacticsBase == null) return [];
+    return Array.from(d.subarray(t.tacticsBase + TACTICS_ORDER, t.tacticsBase + TACTICS_ORDER + 40));
+  }
+  function tacticalOrderPlan(d, t, extraSlots = []) {
+    if (t.tacticsBase == null) return { slots: [], indices: [], missing: [] };
+    const order = tacticalOrder(d, t);
+    const listed = new Set(order.filter(slot => slot !== 255));
+    const slots = [...new Set([...roster(d, t).map(x => x.slot), ...extraSlots])]
+      .filter(slot => !listed.has(slot)).sort((a, b) => a - b);
+    const indices = order.map((slot, i) => slot === 255 && i >= 11 ? i : -1).filter(i => i >= 0);
+    return { slots, indices: indices.slice(0, slots.length), missing: indices.length < slots.length ? slots : [] };
+  }
+  function applyTacticalOrderPlan(d, t, plan) {
+    if (t.tacticsBase == null || !plan.slots.length || plan.missing.length) return false;
+    const order = tacticalOrder(d, t);
+    plan.slots.forEach((slot, i) => { order[plan.indices[i]] = slot; });
+    d.set(order, t.tacticsBase + TACTICS_ORDER);
+    return true;
+  }
+  function removeTacticalRosterSlot(d, t, slot) {
+    if (t.tacticsBase == null) return;
+    const order = tacticalOrder(d, t);
+    const hasSlot = order.includes(slot);
+    const next = order.filter(value => value !== slot)
+      .map(value => value > slot && value !== 255 ? value - 1 : value);
+    if (hasSlot) next.push(order.includes(255) ? 255 : 39);
+    if (hasSlot || next.some((value, i) => value !== order[i]))
+      d.set(next, t.tacticsBase + TACTICS_ORDER);
+  }
   function setNumber(d, t, slot, num) { const o = t.rosterBase + 4 + 160 + slot * 2; d[o] = num & 255; d[o + 1] = (num >> 8) & 255; }
   function setRosterPlayer(d, t, slot, pid) { w32(d, t.rosterBase + 4 + slot * 4, pid >>> 0); }
   function starters(d, t) { if (t.tacticsBase == null) return []; const o = t.tacticsBase + 4 + 0x1E0; return Array.from(d.subarray(o, o + 11)); }
   function setStarter(d, t, i, slot) { if (t.tacticsBase != null) d[t.tacticsBase + 4 + 0x1E0 + i] = slot; }
   function captainSlot(d, t) { return t.tacticsBase == null ? -1 : d[t.tacticsBase + 4 + 0x211]; }
   function setCaptainSlot(d, t, s) { if (t.tacticsBase != null) d[t.tacticsBase + 4 + 0x211] = s; }
-  return { player, team, index, roster, starters, setStarter, setNumber, setRosterPlayer, captainSlot, setCaptainSlot, PLAYER_FIELDS: PF, TEAM_FIELDS: TF };
+  return {
+    player, team, index, roster, starters, setStarter, setNumber, setRosterPlayer,
+    tacticalOrder, tacticalOrderPlan, applyTacticalOrderPlan, removeTacticalRosterSlot,
+    captainSlot, setCaptainSlot, PLAYER_FIELDS: PF, TEAM_FIELDS: TF,
+  };
 })();

@@ -84,15 +84,144 @@ const Pes20Csv = (() => {
     set('EditRivals', B([1, 2, 3].some(i => g('rival' + i) !== 262143)));
     return r;
   }
+  function teamFields(row) {
+    const v = k => row[TI[k]], n = k => Number(v(k));
+    const fields = [
+      ['name', v('Name')], ['country', n('Country')], ['stadium_id', n('Stadium')], ['manager_id', n('Coach')],
+      ['short', v('Abbreviation')], ['stadium_name', v('StadiumName')],
+      ...[1, 2, 3].map(i => ['rival' + i, n('Rival' + i)]),
+      ...[1, 2, 3, 4].map(i => ['banner' + i, v('Banner' + i)]),
+      ...['c1r', 'c1g', 'c1b', 'c2r', 'c2g', 'c2b'].map((k, i) => [k, n(['TeamColor1R', 'TeamColor1G', 'TeamColor1B', 'TeamColor2R', 'TeamColor2G', 'TeamColor2B'][i])]),
+      ...['net1r', 'net1g', 'net1b', 'net2r', 'net2g', 'net2b'].map((k, i) => [k, n(['GoalNettingColor1R', 'GoalNettingColor1G', 'GoalNettingColor1B', 'GoalNettingColor2R', 'GoalNettingColor2G', 'GoalNettingColor2B'][i])]),
+      ['turf', n('TurfPattern')], ['side_color', n('SidelineColour')], ['seat_color', n('SeatColour')],
+      ['goal_style', n('GoalStyle')], ['net_pattern', n('NetPattern')],
+      ['net_b7', n('GoalNettingDesign') & 1], ['net_design_low', (n('GoalNettingDesign') >> 1) & 1],
+      ['e_name', +/^true$/i.test(v('EditName'))], ['e_emblem', +/^true$/i.test(v('EditEmblem'))],
+      ['e_stadium', +/^true$/i.test(v('EditStadium'))], ['e_stadname', +/^true$/i.test(v('EditStadiumName'))],
+      ['e_staddet', +/^true$/i.test(v('EditStadiumDetails'))],
+    ];
+    for (let i = 0; i < 10; i++) fields.push(['kit' + i, n('Kit' + (i + 1))]);
+    return fields;
+  }
   const tpRow = (id, name, club, nat) => [id, name, club ? club.id : 0, club ? club.name : '', nat ? nat.id : 0, nat ? nat.name : ''].map(String);
 
   // archivo completo: BOM, encabezado y filas con CRLF (también al final, como PES2020Editor)
   const clean = v => String(v).replace(/[;\r\n]/g, ' ');
   const file = (head, rows) => '﻿' + [head, ...rows].map(r => r.map(clean).join(';')).join('\r\n') + '\r\n';
-  function parse(text) {
-    const lines = text.replace(/^﻿/, '').split(/\r?\n/).filter(l => l.length);
-    const head = (lines.shift() || '').split(';');
-    return { head, rows: lines.map(l => l.split(';')) };
+  function rosterTeamName(fileName) {
+    const match = String(fileName).match(/^Jugadores\s+-\s+(.+)\.csv$/i);
+    return match ? match[1].trim() : null;
   }
-  return { PLAYER_HEAD, TEAM_HEAD, TP_HEAD, STYLE_OLD, playerRow, playerFields, teamRow, tpRow, file, parse };
+  function rosterSlots(items, oldRoster, order, rolesByPlan) {
+    const slots = new Array(40).fill(null), retained = new Map();
+    for (const player of oldRoster) {
+      if (player.slot < 0 || player.slot >= slots.length) continue;
+      const item = items.find(candidate => candidate.id === player.pid);
+      if (item) retained.set(player.slot, item);
+    }
+    const validSlot = slot => Number.isInteger(slot) && slot >= 0 && slot < slots.length;
+    const starters = order.slice(0, 11);
+    const starterSlots = new Set(starters.filter(validSlot)), rolesAt = index =>
+      [...new Set(rolesByPlan.map(plan => plan[index]).filter(role => Number.isInteger(role) && role >= 0 && role < 13))],
+      compatible = (item, index) => {
+      const fields = item.fields, natural = Number(fields.reg_pos);
+      if (index === 0) return natural === 0 || (Number(fields.pos12) || 0) > 0;
+      const roles = rolesAt(index);
+      return roles.length > 0 && roles.every(role => (Number(fields['pos' + POS_TO_PP[role]]) || 0) > 0 || natural === role);
+    };
+    const positionScore = (item, index) => {
+      if (!compatible(item, index)) return 0;
+      const fields = item.fields, natural = Number(fields.reg_pos);
+      if (index === 0) return 100 + (Number(fields.pos12) || 0) * 10 + (natural === 0 ? 1 : 0);
+      const roles = rolesAt(index);
+      return roles.reduce((score, role) => score + (Number(fields['pos' + POS_TO_PP[role]]) || 0) * 2 + (natural === role ? 1 : 0), 0);
+    };
+    const pinned = new Set();
+    for (let i = 0; i < starters.length; i++) {
+      const slot = starters[i];
+      if (!validSlot(slot)) continue;
+      const incumbent = retained.get(slot);
+      if (incumbent && positionScore(incumbent, i) > 0) {
+        slots[slot] = incumbent;
+        pinned.add(incumbent.id);
+      }
+    }
+    const pending = items.filter(item => !pinned.has(item.id));
+    const vacancies = starters.map((slot, index) => ({ slot, index }))
+      .filter(({ slot }) => validSlot(slot) && slots[slot] === null);
+    const candidates = vacancies.map(({ index }) => pending
+      .map((item, playerIndex) => ({ playerIndex, score: positionScore(item, index) }))
+      .filter(candidate => candidate.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map(candidate => candidate.playerIndex));
+    const playerToVacancy = new Map();
+    const assign = (vacancyIndex, visited) => {
+      for (const playerIndex of candidates[vacancyIndex]) {
+        if (visited.has(playerIndex)) continue;
+        visited.add(playerIndex);
+        const previous = playerToVacancy.get(playerIndex);
+        if (previous === undefined || assign(previous, visited)) {
+          playerToVacancy.set(playerIndex, vacancyIndex);
+          return true;
+        }
+      }
+      return false;
+    };
+    const assignmentOrder = vacancies.map((_, i) => i)
+      .sort((a, b) => candidates[a].length - candidates[b].length || a - b);
+    for (const vacancyIndex of assignmentOrder) assign(vacancyIndex, new Set());
+    const vacancyToPlayer = new Map([...playerToVacancy].map(([playerIndex, vacancyIndex]) => [vacancyIndex, playerIndex]));
+    const assigned = new Set();
+    for (const [vacancyIndex, playerIndex] of vacancyToPlayer) {
+      slots[vacancies[vacancyIndex].slot] = pending[playerIndex];
+      assigned.add(playerIndex);
+    }
+    const remaining = pending.filter((_, i) => !assigned.has(i));
+    pending.splice(0, pending.length, ...remaining);
+    for (const player of oldRoster) {
+      if (starterSlots.has(player.slot) || slots[player.slot]) continue;
+      const retainedPlayer = retained.get(player.slot), i = retainedPlayer && pending.findIndex(item => item.id === retainedPlayer.id);
+      if (i >= 0) slots[player.slot] = pending.splice(i, 1)[0];
+    }
+    const benchSlots = [...order.slice(11), ...Array.from({ length: 40 }, (_, i) => i)]
+      .filter((slot, i, all) => validSlot(slot) && !starterSlots.has(slot) && slots[slot] === null && all.indexOf(slot) === i);
+    for (const slot of benchSlots) {
+      if (!pending.length) break;
+      slots[slot] = pending.shift();
+    }
+    const starterSlotsInOrder = starters.filter(validSlot);
+    const duplicateStarters = starterSlotsInOrder.filter((slot, i) => starterSlotsInOrder.indexOf(slot) !== i);
+    const missingStarters = starters.filter(slot => !validSlot(slot) || slots[slot] === null);
+    const missingDetails = missingStarters.map(slot => {
+      const index = starters.indexOf(slot);
+      const candidates = items.filter(item => compatible(item, index));
+      return { slot, index, roles: rolesAt(index), candidates: candidates.length };
+    });
+    return { slots, unplaced: pending, missingStarters, missingDetails, duplicateStarters };
+  }
+  function parse(text) {
+    const rows = []; let row = [], cell = '', quoted = false;
+    text = text.replace(/^﻿/, '');
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (quoted) {
+        if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+        else if (c === '"') quoted = false;
+        else cell += c;
+      } else if (c === '"' && !cell) quoted = true;
+      else if (c === ';') { row.push(cell); cell = ''; }
+      else if (c === '\r' || c === '\n') {
+        if (c === '\r' && text[i + 1] === '\n') i++;
+        row.push(cell); cell = '';
+        if (row.some(x => x !== '')) rows.push(row);
+        row = [];
+      } else cell += c;
+    }
+    if (quoted) throw new Error('El CSV tiene un campo entre comillas sin cerrar.');
+    if (cell || row.length) { row.push(cell); if (row.some(x => x !== '')) rows.push(row); }
+    const head = rows.shift() || [];
+    if (rows.some(r => r.length !== head.length)) throw new Error('El CSV tiene filas con distinta cantidad de columnas.');
+    return { head, rows };
+  }
+  return { PLAYER_HEAD, TEAM_HEAD, TP_HEAD, STYLE_OLD, playerRow, playerFields, teamRow, teamFields, tpRow, file, rosterTeamName, rosterSlots, parse };
 })();

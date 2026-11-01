@@ -5,6 +5,7 @@ const PesCrypt = (() => {
     '2021': hex('9061d866437724f892bab87121c76063f0919a7ded4780de51f5ddd108fe3284f5099200b23e889feb244305587600229bfeecf6500029d3427550b9ecd2f675'),
     '2020': hex('e2bf510754e621782c5e8d33137ac9159977d9a01bc295d9bb9bb100841cb362e540d956455b7c7c4ff1da26b45a0c5c4d6b9e9875a939074c4b55bd8e01a931'),
   };
+  let fl27Key = null;
   const ENC = 320, HDR = 208;
 
   function MT(keyBytes) {
@@ -93,14 +94,19 @@ const PesCrypt = (() => {
     return { enc, hdr, desc, logo, data, serial };
   }
   function decrypt(bytes) {
-    for (const game of ['2021', '2020']) {
-      const r = decryptWith(bytes, KEYS[game]);
+    for (const game of ['2021', '2020', 'FL27']) {
+      const master = game === 'FL27' ? fl27Key : KEYS[game];
+      if (!master) continue;
+      const r = decryptWith(bytes, master);
+      if (r && game === 'FL27' && (cstr(r.hdr.subarray(144, 176)) !== 'EDIT' || cstr(r.hdr.subarray(176, 208)) !== 'SP Football Life 2027')) continue;
       if (r) { r.game = game; return r; }
     }
-    throw new Error('No es un archivo de guardado de PES 2020/2021 válido, o está dañado.');
+    if (!fl27Key) throw new Error('No se pudo abrir el archivo. Para un EDIT de Football Life 2027, primero cargá el archivo FL_key.bin con el botón "Cargar clave FL27".');
+    throw new Error('No es un archivo de guardado de PES 2020/2021 o Football Life 2027 válido, está dañado, o la clave FL27 no corresponde.');
   }
   function encrypt(f) {
-    const master = KEYS[f.game];
+    const master = f.game === 'FL27' ? fl27Key : KEYS[f.game];
+    if (!master) throw new Error('Para guardar este EDIT de Football Life 2027, primero cargá el archivo FL_key.bin con el botón "Cargar clave FL27".');
     const hdr = f.hdr.slice(), hv = new DataView(hdr.buffer);
     hv.setUint32(64, f.data.length, true); hv.setUint32(68, f.logo.length, true);
     hv.setUint32(72, f.desc.length, true); hv.setUint32(76, f.serial.length / 2, true);
@@ -129,5 +135,10 @@ const PesCrypt = (() => {
     const b = new TextEncoder().encode(text).subarray(0, d.length - 1);
     d.set(b); f.desc = d;
   }
-  return { decrypt, encrypt, info, setSid, setDescription };
+  function setFl27Key(bytes) {
+    if (!bytes || bytes.length !== 64 || typeof bytes[0] !== 'number') throw new Error('FL_key.bin tiene que tener exactamente 64 bytes.');
+    fl27Key = Uint8Array.from(bytes);
+  }
+  function hasFl27Key() { return fl27Key !== null; }
+  return { decrypt, encrypt, info, setSid, setDescription, setFl27Key, hasFl27Key };
 })();

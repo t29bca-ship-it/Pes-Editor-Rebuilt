@@ -9,11 +9,19 @@ const { load, pattern } = require('./load');
 const PesCrypt = load('pescrypt.js', 'PesCrypt');
 const sha256 = b => crypto.createHash('sha256').update(b).digest('hex');
 const sameBytes = (a, b, msg) => assert.ok(Buffer.from(a).equals(Buffer.from(b)), msg);
+const FL27_TEST_KEY = pattern(64, 27);
+PesCrypt.setFl27Key(FL27_TEST_KEY);
 
 // Archivo sintético armado como los de PES: cabecera de 320, cabecera interna de 208 y cuatro bloques.
 // Los tamaños no son múltiplos de 4 a propósito, para probar los bytes sueltos del final.
 function sample(game) {
   const hdr = pattern(208, 2);
+  if (game === 'FL27') {
+    hdr.fill(0, 144, 176);
+    hdr.fill(0, 176, 208);
+    hdr.set(new TextEncoder().encode('EDIT'), 144);
+    hdr.set(new TextEncoder().encode('SP Football Life 2027'), 176);
+  }
   const f = { game, enc: pattern(320, 1), hdr, desc: pattern(61, 3), logo: pattern(130, 4), data: pattern(1003, 5), serial: null };
   PesCrypt.setSid(f, 'PES-EDIT-7');
   return f;
@@ -24,9 +32,10 @@ function sample(game) {
 const GOLDEN = {
   '2021': '6175e664717989c7b8182a508914e36416d1f5d4641c86418d5073f4b9f0fa8c',
   '2020': '43aa64efe9679dc0ad6712a0d68448bcc05b4f3378f24676444ae9968545742f',
+  FL27: 'fffa9712461bf4692b24590a977668a02427ad0bb416bab93fab2e9559cecf6d',
 };
 
-for (const game of ['2021', '2020']) {
+for (const game of ['2021', '2020', 'FL27']) {
   test(`PES ${game}: cifrar da exactamente los bytes de la referencia`, () => {
     const bytes = PesCrypt.encrypt(sample(game));
     assert.equal(bytes.length, 320 + 208 + 61 + 130 + 1003 + 20);
@@ -68,6 +77,11 @@ test('un archivo dañado o que no es de PES se rechaza', () => {
   const bytes = PesCrypt.encrypt(sample('2021'));
   assert.throws(() => PesCrypt.decrypt(bytes.subarray(0, bytes.length - 1)), /No es un archivo de guardado/);
   assert.throws(() => PesCrypt.decrypt(pattern(2000, 9)), /No es un archivo de guardado/);
+});
+
+test('FL27: rechaza una clave local que no tenga exactamente 64 bytes', () => {
+  assert.throws(() => PesCrypt.setFl27Key(pattern(63, 27)), /exactamente 64 bytes/);
+  assert.throws(() => PesCrypt.setFl27Key(pattern(65, 27)), /exactamente 64 bytes/);
 });
 
 // EDIT reales: si alguien deja archivos en test/fixtures (o apunta PES_EDIT_DIR a una carpeta), se prueban también.

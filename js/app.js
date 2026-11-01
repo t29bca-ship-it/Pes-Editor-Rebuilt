@@ -77,7 +77,7 @@ const S = {
   tab: 'teams', team: null, teamByTab: {}, natSeen: false, player: null, ttab: 'roster', ptab: 'profile',
   qTeam: '', tSort: 'name', tFilter: 'all', tLeague: '', qPlayer: '', pSrc: 'edit', dbPlayer: null, showEmpty: false, autoLock: true, pFilter: 'all', rosterSort: 'xi', fplan: 0, fvar: 0, flink: true, fsel: null, fbench: null, fmulti: [], fmultiMode: false,
 };
-const LAYOUT = { '2021': 0x24C, '2020': 0x210 };
+const LAYOUT = { '2021': 0x24C, '2020': 0x210, FL27: 0x24C };
 
 // ---------- helpers ----------
 let toastT;
@@ -1159,6 +1159,309 @@ function p20ExportTeamPlayers() {
   p20Download('Equipos-Jugadores - PES 2021 - Edit.csv', Pes20Csv.file(Pes20Csv.TP_HEAD, rows));
   toast(`CSV para PES2020Editor: ${rows.length} jugadores con su equipo y selección.`);
 }
+function p20CsvRecords(parsed, head, kind) {
+  if (parsed.head.length !== head.length || parsed.head.some((x, i) => x !== head[i])) throw new Error('Las columnas no coinciden con el formato exportado de ' + kind + '.');
+  if (!parsed.rows.length) throw new Error('El CSV no contiene filas de datos.');
+  const idAt = head.indexOf('Id'), seen = new Set();
+  for (const row of parsed.rows) {
+    const id = Number(row[idAt]);
+    if (!Number.isInteger(id) || id < 1 || id > 0xFFFFFFFF) throw new Error('Hay un ID inválido.');
+    if (seen.has(id)) throw new Error('El ID ' + id + ' aparece más de una vez.');
+    seen.add(id);
+  }
+  return parsed.rows;
+}
+function p20CheckFields(fields, access, skip = []) {
+  for (const [k, v] of fields) {
+    if (skip.includes(k)) continue;
+    if (typeof v === 'string') continue;
+    if (!access.has(k)) throw new Error(`El campo "${k}" no se puede importar.`);
+    const max = access.max(k);
+    if (!Number.isInteger(v) || v < 0 || v > max) throw new Error(`El valor de "${k}" está fuera de rango.`);
+  }
+}
+function p20InsertCsvPlayers(items) {
+  const R = 0x138, n = S.ix.players.length;
+  const add = items.filter(x => !S.ix.byId.has(x.id)).sort((a, b) => a.id - b.id);
+  if (!add.length) return 0;
+  if (n + add.length > EDIT_CAP) throw new Error('El EDIT no tiene espacio para agregar todos los jugadores del CSV.');
+  const old = S.d.slice(0x7C, 0x7C + n * R);
+  const oldId = i => (old[i * R] | old[i * R + 1] << 8 | old[i * R + 2] << 16 | old[i * R + 3] << 24) >>> 0;
+  let i = 0, j = 0, writeAt = 0x7C;
+  while (i < n || j < add.length) {
+    if (j >= add.length || (i < n && oldId(i) < add[j].id)) {
+      S.d.set(old.subarray(i * R, (i + 1) * R), writeAt);
+      i++;
+    } else {
+      S.d.fill(0, writeAt, writeAt + R);
+      PD.player.set(S.d, writeAt, 'id', add[j].id);
+      PD.player.set(S.d, writeAt, 'comm_id', add[j].id);
+      setEditLook(writeAt, add[j].id);
+      j++;
+    }
+    writeAt += R;
+  }
+  const count = n + add.length;
+  S.d[96] = count & 255; S.d[97] = count >>> 8;
+  S.ix = PD.index(S.d, S.f.game);
+  return add.length;
+}
+function p20ApplyCsvPlayerFields(target, fields, skipCommentary = true) {
+  for (const [k, v] of Object.entries(fields))
+    if (k !== 'id' && (!skipCommentary || k !== 'comm_id')) PD.player.set(S.d, target.base, k, v);
+}
+function p20RemoveRosterMembership(team, slot, nationalCallup = false) {
+  const error = rosterRemove(team, slot, true);
+  if (!error) return null;
+  if (!nationalCallup || !isNat(team) || !error.startsWith('No hay suplentes')) return error;
+  PD.setRosterPlayer(S.d, team, slot, 0);
+  PD.setNumber(S.d, team, slot, 0);
+  if (team.tacticsBase != null) {
+    setOrder(team, getOrder(team).map(value => value === slot ? 255 : value));
+    PD.starters(S.d, team).forEach((value, i) => { if (value === slot) PD.setStarter(S.d, team, i, 255); });
+    if (PD.captainSlot(S.d, team) === slot) PD.setCaptainSlot(S.d, team, 255);
+    for (let i = 0; i < NTAKERS; i++) if (S.d[team.tacticsBase + TAKERS + i] === slot) S.d[team.tacticsBase + TAKERS + i] = 255;
+  }
+  return null;
+}
+function p20StagePlayerRosterChanges(rosterTeam, items) {
+  const nations = new Map(items.map(item => [item.id, item.fields.nation]));
+  const transfers = S.ix.teams.map(team => ({
+    team,
+    players: PD.roster(S.d, team).filter(x => {
+      if (!nations.has(x.pid) || team.id === (rosterTeam && rosterTeam.id)) return false;
+      if (rosterTeam && isNat(rosterTeam)) return isNat(team);
+      if (isNat(team)) return true;
+      return !!rosterTeam;
+    }),
+  })).filter(x => x.players.length);
+  if (!transfers.length) return { data: null, teams: [], count: 0 };
+  const original = S.d, data = original.slice();
+  S.d = data;
+  try {
+    for (const transfer of transfers) for (const player of [...transfer.players].sort((a, b) => b.slot - a.slot)) {
+      const current = PD.roster(S.d, transfer.team).find(x => x.slot === player.slot);
+      if (!current) continue;
+      const error = p20RemoveRosterMembership(transfer.team, current.slot, isNat(transfer.team));
+      if (error) throw new Error(`No se pudo actualizar la convocatoria/plantel del ID ${player.pid} en ${tget(transfer.team, 'name')}: ${error}`);
+    }
+  } finally { S.d = original; }
+  return { data, teams: transfers.map(x => x.team), count: transfers.reduce((n, x) => n + x.players.length, 0) };
+}
+function p20ApplyPlayerRosterChanges(transfers) {
+  if (!transfers.data) return;
+  for (const team of transfers.teams) {
+    S.d.set(transfers.data.subarray(team.rosterBase, team.rosterBase + 0x11C), team.rosterBase);
+    if (team.tacticsBase != null)
+      S.d.set(transfers.data.subarray(team.tacticsBase, team.tacticsBase + 0x274), team.tacticsBase);
+  }
+}
+function p20StageTeamPlayerAssignments(items) {
+  const data = S.d.slice(), original = S.d, changed = new Set(), pending = [];
+  S.d = data;
+  try {
+    for (const item of items) for (const [national, target] of [[false, item.club], [true, item.national]]) {
+      const memberships = S.ix.teams.filter(team => team.rosterBase != null && isNat(team) === national)
+        .flatMap(team => PD.roster(S.d, team).filter(player => player.pid === item.id).map(player => ({ team, ...player })));
+      const retained = target && memberships.find(player => player.team.id === target.id);
+      const number = retained ? retained.number : (memberships.find(player => player.number)?.number || 0);
+      const removals = memberships.filter(player => !retained || player.team.id !== target.id || player.slot !== retained.slot)
+        .sort((a, b) => a.team.id - b.team.id || b.slot - a.slot);
+      for (const player of removals) {
+        const current = PD.roster(S.d, player.team).find(x => x.slot === player.slot && x.pid === item.id);
+        if (!current) continue;
+        const error = p20RemoveRosterMembership(player.team, current.slot, national);
+        if (error) throw new Error(`No se pudo actualizar el ID ${item.id} en ${tget(player.team, 'name')}: ${error}`);
+        changed.add(player.team);
+      }
+      if (target && !retained) pending.push({ item, target, number });
+    }
+    for (const { item, target, number } of pending) {
+      const roster = PD.roster(S.d, target);
+      if (roster.length >= 40) throw new Error(`El plantel de ${tget(target, 'name')} ya tiene 40 jugadores.`);
+      let slot = 0;
+      while (slot < 40 && (S.d[target.rosterBase + 4 + slot * 4] | S.d[target.rosterBase + 5 + slot * 4] |
+        S.d[target.rosterBase + 6 + slot * 4] | S.d[target.rosterBase + 7 + slot * 4])) slot++;
+      if (target.tacticsBase != null) {
+        const plan = PD.tacticalOrderPlan(S.d, target, [slot]);
+        if (plan.missing.length) throw new Error(`No hay lugar libre en la táctica de ${tget(target, 'name')}.`);
+        PD.applyTacticalOrderPlan(S.d, target, plan);
+      }
+      PD.setRosterPlayer(S.d, target, slot, item.id);
+      const used = new Set(roster.map(player => player.number));
+      let shirt = number && !used.has(number) ? number : 0;
+      if (!shirt) for (let candidate = 2; candidate < 100; candidate++) if (!used.has(candidate)) { shirt = candidate; break; }
+      PD.setNumber(S.d, target, slot, shirt);
+      changed.add(target);
+    }
+  } finally { S.d = original; }
+  return { data, teams: [...changed] };
+}
+function p20ApplyTeamPlayerAssignments(assignments) {
+  for (const team of assignments.teams) {
+    S.d.set(assignments.data.subarray(team.rosterBase, team.rosterBase + 0x11C), team.rosterBase);
+    if (team.tacticsBase != null)
+      S.d.set(assignments.data.subarray(team.tacticsBase, team.tacticsBase + 0x274), team.tacticsBase);
+  }
+}
+async function p20ImportTeamPlayersCsv(file) {
+  try {
+    const parsed = Pes20Csv.parse(await file.text()), rows = p20CsvRecords(parsed, Pes20Csv.TP_HEAD, 'Equipos-Jugadores');
+    const items = rows.map(row => {
+      const id = Number(row[0]), clubId = row[2], nationalId = row[4];
+      if (!/^\d+$/.test(clubId) || !/^\d+$/.test(nationalId))
+        throw new Error('Id Club e Id National deben contener un ID de equipo o 0 para quitar la membresía.');
+      const resolve = (value, national) => {
+        const teamId = Number(value);
+        if (!teamId) return null;
+        const team = S.ix.teamById.get(teamId);
+        if (!team || isNat(team) !== national)
+          throw new Error(`El equipo ${teamId} indicado para el ID ${id} no existe o no corresponde a ${national ? 'una selección' : 'un club'}.`);
+        if (team.rosterBase == null) throw new Error(`El equipo "${tget(team, 'name')}" no tiene un plantel editable.`);
+        if (national) {
+          const player = S.ix.byId.get(id), known = player
+            ? PD.player.get(S.d, player.base, 'nation')
+            : S.names && S.names.get(id) ? S.names.get(id).n : null;
+          if (known == null || known !== tget(team, 'country'))
+            throw new Error(`No se puede asignar el ID ${id} a ${tget(team, 'name')}: importá primero su nacionalidad correcta o elegí una selección del mismo país.`);
+        }
+        return team;
+      };
+      return { id, club: resolve(clubId, false), national: resolve(nationalId, true) };
+    });
+    const assignments = p20StageTeamPlayerAssignments(items);
+    if (!await confirmBox(`Se actualizarán las asignaciones de ${items.length} jugadores según Id Club e Id National. Un 0 quitará al jugador de todos los equipos de esa categoría; los jugadores que no aparecen en el CSV no cambiarán. Se puede deshacer con Ctrl+Z. ¿Continuar?`)) return;
+    edit('Importar CSV de asignaciones', 'csv-asignaciones', assignments.teams.flatMap(regT), () => p20ApplyTeamPlayerAssignments(assignments));
+    rebuildTeamOf(); render(); toast(`Asignaciones CSV aplicadas a ${items.length} jugadores.`);
+  } catch (e) { toast('No se pudo importar el CSV: ' + e.message, 6000); }
+}
+async function p20ImportCsv(file, kind) {
+  try {
+    if (kind === 'asignaciones') return await p20ImportTeamPlayersCsv(file);
+    const text = await file.text(), parsed = Pes20Csv.parse(text);
+    const head = kind === 'jugadores' ? Pes20Csv.PLAYER_HEAD : Pes20Csv.TEAM_HEAD;
+    if (parsed.head.length !== head.length || parsed.head.some((x, i) => x !== head[i])) {
+      throw new Error(kind === 'jugadores'
+        ? 'El archivo no coincide con el CSV de jugadores exportado por PES Editor.'
+        : 'El archivo no coincide con el CSV de equipos exportado por PES Editor.');
+    }
+    const rows = p20CsvRecords(parsed, head, kind);
+    let rosterTeam = null;
+    if (kind === 'jugadores') {
+      const rosterTeamName = Pes20Csv.rosterTeamName(file.name);
+      if (rosterTeamName) {
+        const matches = S.ix.teams.filter(t => sameTeamName(tget(t, 'name'), rosterTeamName));
+        if (matches.length !== 1) throw new Error(matches.length
+          ? `El nombre "${rosterTeamName}" coincide con más de un equipo del EDIT.`
+          : `No se encontró "${rosterTeamName}" en los equipos del EDIT; el nombre del archivo debe corresponder al equipo.`);
+        rosterTeam = matches[0];
+        if (rosterTeam.rosterBase == null) throw new Error(`El equipo "${tget(rosterTeam, 'name')}" no tiene una plantilla editable en este EDIT.`);
+        if (rows.length > 40) throw new Error('El CSV tiene más de 40 jugadores y no cabe en una plantilla.');
+      }
+    }
+    const items = rows.map(row => {
+      if (kind === 'jugadores') {
+        const fields = Pes20Csv.playerFields(row), id = Number(row[head.indexOf('Id')]);
+        const updates = Object.entries(fields).filter(([k]) => k !== 'id' && k !== 'comm_id');
+        p20CheckFields(updates, PD.player);
+        return { id, fields, target: S.ix.byId.get(id) };
+      }
+      if (typeof Pes20Csv.teamFields !== 'function') throw new Error('El módulo CSV está desactualizado. Recargá el editor antes de importar equipos.');
+      const id = Number(row[head.indexOf('Id')]), fields = Pes20Csv.teamFields(row);
+      p20CheckFields(fields.filter(([k]) => k !== 'net_design_low' && !k.startsWith('kit')), PD.team);
+      for (const [k, v] of fields) if (k.startsWith('kit') && (!Number.isInteger(v) || v < 0 || v > 0xFFFFFFFF)) throw new Error('El valor de "' + k + '" está fuera de rango.');
+      return { id, fields, target: S.ix.teamById.get(id) };
+    });
+    const matched = items.filter(x => x.target), additions = kind === 'jugadores' && rosterTeam ? items.filter(x => !x.target) : [];
+    if (kind === 'jugadores' && !rosterTeam && !matched.length) throw new Error('Ningún ID de jugadores del CSV existe en el EDIT abierto. Para agregar los que faltan, importá el CSV exportado desde el plantel del equipo (nombre: "Jugadores - Nombre del equipo.csv").');
+    if (kind === 'equipos' && !matched.length) throw new Error('Ningún ID de equipos del CSV existe en el EDIT abierto; no se cambió nada.');
+    const skipped = items.length - matched.length - additions.length;
+    const oldRoster = rosterTeam ? PD.roster(S.d, rosterTeam) : [];
+    const activeVariant = rosterTeam && rosterTeam.tacticsBase != null && isFluid(rosterTeam)
+      ? Math.max(0, Math.min(2, S.fvar))
+      : 0;
+    const activeRoles = rosterTeam && rosterTeam.tacticsBase != null
+      ? [readForm(rosterTeam, S.fplan, activeVariant).roles]
+      : [];
+    const rosterPlan = rosterTeam
+      ? Pes20Csv.rosterSlots(items, oldRoster, rosterTeam.tacticsBase != null ? getOrder(rosterTeam) : [],
+        activeRoles)
+      : null;
+    if (rosterTeam && isNat(rosterTeam) && items.some(item => item.fields.nation !== tget(rosterTeam, 'country')))
+      throw new Error(`La nacionalidad del CSV no coincide con la selección "${tget(rosterTeam, 'name')}". Corregí Country o importá otro plantel.`);
+    const rosterChangeItems = kind === 'jugadores' ? (rosterTeam ? items : matched) : [];
+    const playerRosterChanges = rosterChangeItems.length
+      ? p20StagePlayerRosterChanges(rosterTeam, rosterChangeItems)
+      : { data: null, teams: [], count: 0 };
+    if (rosterPlan && rosterPlan.duplicateStarters.length) throw new Error(
+      'La táctica actual repite puestos en el 11 inicial; no se puede importar el plantel con seguridad.');
+    if (rosterPlan && rosterPlan.missingStarters.length) {
+      const details = rosterPlan.missingDetails.map(({ index, roles, candidates }) => {
+        const roleNames = roles.map(role => `${POS[role]} (${POS_LONG[role]})`).join('/');
+        return `puesto ${index + 1} del 11${roleNames ? ` ${roleNames}` : ''}: ${candidates} candidato(s)`;
+      }).join('; ');
+      throw new Error(`El CSV no permite cubrir ${details}. No se cambió nada; revisá las posiciones y niveles del CSV o la variante táctica seleccionada.`);
+    }
+    if (rosterPlan && rosterPlan.unplaced.length) throw new Error(
+      `No se pudieron ubicar ${rosterPlan.unplaced.length} jugadores sin asignarlos a puestos titulares incompatibles. Reducí el CSV o ajustá el 11 inicial antes de importarlo.`);
+    const prompt = rosterTeam
+      ? `Se agregarán ${additions.length} jugadores nuevos y se actualizarán ${matched.length} existentes desde el CSV. El plantel de ${tget(rosterTeam, 'name')} se reemplazará por los ${items.length} jugadores del archivo; los ID y los nombres del CSV se conservarán.${playerRosterChanges.count ? ` Se quitarán ${playerRosterChanges.count} membresías anteriores; el CSV no incluye una columna de selección nacional, así que las convocatorias anteriores se quitarán, excepto la selección que sea el destino explícito del archivo.` : ''} Los nuevos se asignan a los puestos titulares vacantes según la variante seleccionada del plan ${S.fplan + 1}; el resto queda de suplente. Los dorsales existentes se mantienen cuando coinciden; para los nuevos se asignan dorsales libres. Se puede deshacer con Ctrl+Z. ¿Continuar?`
+      : `Se actualizarán ${matched.length} ${kind} por ID; ${skipped} fila(s) cuyo ID no existe en el EDIT se omitirán. Los ID no se modifican.${kind === 'jugadores' && playerRosterChanges.count ? ` El CSV no tiene columna de selección nacional: los jugadores listados se quitarán de todas las convocatorias nacionales.` : ''} Se puede deshacer con Ctrl+Z. ¿Continuar?`;
+    if (!await confirmBox(prompt)) return;
+    const regions = kind === 'jugadores'
+      ? [...editPlayersRegion(additions.length), ...(rosterTeam ? regT(rosterTeam) : []),
+        ...playerRosterChanges.teams.flatMap(regT)]
+      : matched.map(x => [x.target.base, LAYOUT[S.f.game]]);
+    edit('Importar CSV de ' + kind, 'csv-' + kind, regions, () => {
+      if (additions.length) p20InsertCsvPlayers(additions);
+      for (const item of matched) {
+        if (kind === 'jugadores') {
+          const target = S.ix.byId.get(item.id);
+          p20ApplyCsvPlayerFields(target, item.fields, false);
+        } else {
+          for (const [k, v] of item.fields) {
+            if (k === 'net_design_low') PD.team.set(S.d, item.target.base, 'net_design', (PD.team.get(S.d, item.target.base, 'net_design') & ~1) | v);
+            else if (k.startsWith('kit')) {
+              const o = item.target.base + 0x30 + Number(k.slice(3)) * 4;
+              S.d[o] = v & 255; S.d[o + 1] = (v >>> 8) & 255; S.d[o + 2] = (v >>> 16) & 255; S.d[o + 3] = v >>> 24;
+            } else PD.team.set(S.d, item.target.base, k, v);
+          }
+        }
+      }
+      if (kind === 'jugadores') {
+        for (const item of additions) {
+          const target = S.ix.byId.get(item.id);
+          p20ApplyCsvPlayerFields(target, item.fields);
+        }
+      }
+      p20ApplyPlayerRosterChanges(playerRosterChanges);
+      if (rosterTeam) {
+        const targetTeam = S.ix.teamById.get(rosterTeam.id), current = new Map(oldRoster.map(x => [x.pid, x]));
+        const slots = rosterPlan.slots;
+        const usedNumbers = new Set();
+        const nextNumber = () => {
+          for (let number = 2; number < 100; number++) if (!usedNumbers.has(number)) return number;
+          return 0;
+        };
+        for (let slot = 0; slot < 40; slot++) {
+          const item = slots[slot], old = item && current.get(item.id);
+          let number = old && old.number;
+          if (!number || usedNumbers.has(number)) number = nextNumber();
+          if (number) usedNumbers.add(number);
+          PD.setRosterPlayer(S.d, targetTeam, slot, item ? item.id : 0);
+          PD.setNumber(S.d, targetTeam, slot, item ? number : 0);
+        }
+      }
+    });
+    if (additions.length) S.hist[S.hp - 1] && (S.hist[S.hp - 1].reindex = true);
+    if (kind === 'jugadores' && additions.length) S.ix = PD.index(S.d, S.f.game);
+    if (rosterTeam) rebuildTeamOf();
+    render();
+    toast(rosterTeam
+      ? `Plantel importado: ${items.length} jugadores en ${tget(S.ix.teamById.get(rosterTeam.id), 'name')}; ${additions.length} agregados y ${matched.length} actualizados por ID${playerRosterChanges.count ? `; ${playerRosterChanges.count} membresías anteriores quitadas` : ''}.`
+      : `CSV importado: ${matched.length} ${kind} actualizados; ${skipped} omitidos por ID${kind === 'jugadores' && playerRosterChanges.count ? `; ${playerRosterChanges.count} convocatorias nacionales quitadas` : ''}.`, 6000);
+  } catch (e) { toast('No se pudo importar el CSV: ' + e.message, 6000); }
+}
 function fillLazySelect(sel) {
   const k = sel.dataset.lazy, O = S._rOpts; if (!k || !O) return; delete sel.dataset.lazy;
   if (k === 't') sel.insertAdjacentHTML('beforeend', O.t);
@@ -1216,16 +1519,23 @@ const ORD = 0x1E4, TAKERS = 0x20C, NTAKERS = 9, CAPT = 0x215;
 const getOrder = t => Array.from(S.d.subarray(t.tacticsBase + ORD, t.tacticsBase + ORD + 40));
 const setOrder = (t, a) => S.d.set(a, t.tacticsBase + ORD);
 function swapInOrder(t, i, slot) { const o = getOrder(t), j = o.indexOf(slot); if (j < 0) { o[i] = slot; } else { [o[i], o[j]] = [o[j], o[i]]; } setOrder(t, o); }
+function tacticalOrderPlan(t, extraSlots = []) { return PD.tacticalOrderPlan(S.d, t, extraSlots); }
+function applyTacticalOrderPlan(t, plan) { return PD.applyTacticalOrderPlan(S.d, t, plan); }
+function syncTacticalRoster(t) {
+  const plan = tacticalOrderPlan(t);
+  applyTacticalOrderPlan(t, plan);
+  return plan;
+}
 // Frees a starter/captain/taker slot: promotes the first substitute, hands the armband and set pieces to another starter.
 function vacate(t, slot) {
   if (t.tacticsBase == null) return null;
-  const n = PD.roster(S.d, t).length, o = getOrder(t), i = o.indexOf(slot);
+  const occupied = new Set(PD.roster(S.d, t).map(x => x.slot)), o = getOrder(t), i = o.indexOf(slot);
   if (i >= 0 && i < 11) {
-    const j = o.findIndex((v, k) => k >= 11 && v < n && v !== slot);
+    const j = o.findIndex((v, k) => k >= 11 && occupied.has(v) && v !== slot);
     if (j < 0) return 'No hay suplentes para reemplazarlo en el 11 inicial.';
     [o[i], o[j]] = [o[j], o[i]]; setOrder(t, o);
   }
-  const starters = getOrder(t).slice(0, 11).filter(v => v !== slot && v < n);
+  const starters = getOrder(t).slice(0, 11).filter(v => v !== slot && occupied.has(v));
   const repl = starters.find((v, k) => k > 0) ?? starters[0] ?? 0;
   if (S.d[t.tacticsBase + CAPT] === slot) S.d[t.tacticsBase + CAPT] = repl;
   for (let k = 0; k < NTAKERS; k++) if (S.d[t.tacticsBase + TAKERS + k] === slot) S.d[t.tacticsBase + TAKERS + k] = repl;
@@ -1240,8 +1550,7 @@ function rosterRemove(t, slot, auto = false) {
   ids.splice(slot, 1); ids.push(0); nums.splice(slot, 1); nums.push(0);
   for (let k = 0; k < 40; k++) { PD.setRosterPlayer(S.d, t, k, ids[k]); PD.setNumber(S.d, t, k, nums[k]); }
   if (t.tacticsBase != null) {
-    const o = getOrder(t);
-    if (o.includes(slot)) { const no = o.filter(v => v !== slot).map(v => v > slot && v !== 255 ? v - 1 : v); no.push(39); setOrder(t, no); }
+    PD.removeTacticalRosterSlot(S.d, t, slot);
     const fix = off => { const v = S.d[t.tacticsBase + off]; if (v !== 255 && v > slot) S.d[t.tacticsBase + off] = v - 1; };
     fix(CAPT); for (let k = 0; k < NTAKERS; k++) fix(TAKERS + k);
   }
@@ -1252,11 +1561,17 @@ function rosterAddCheck(t, pid) {
   const r = PD.roster(S.d, t);
   if (r.some(x => x.pid === pid)) return 'Ese jugador ya está en este plantel.';
   if (r.length >= 40) return 'El plantel ya tiene 40 jugadores.';
+  if (t.tacticsBase != null) {
+    let slot = 0;
+    while (slot < 40 && (S.d[t.rosterBase + 4 + slot * 4] | S.d[t.rosterBase + 5 + slot * 4] | S.d[t.rosterBase + 6 + slot * 4] | S.d[t.rosterBase + 7 + slot * 4])) slot++;
+    if (tacticalOrderPlan(t, [slot]).missing.length) return 'No hay lugar libre en la táctica para agregar a otro jugador.';
+  }
   return null;
 }
 function rosterAdd(t, pid, num) {
   let slot = 0; while (slot < 40) { const o = t.rosterBase + 4 + slot * 4; if (!(S.d[o] | S.d[o + 1] | S.d[o + 2] | S.d[o + 3])) break; slot++; }
   PD.setRosterPlayer(S.d, t, slot, pid); PD.setNumber(S.d, t, slot, num || 0);
+  syncTacticalRoster(t);
 }
 function freeNumber(t, pref) { const used = new Set(PD.roster(S.d, t).map(x => x.number)); if (pref && !used.has(pref)) return pref; for (let n = 2; n < 100; n++) if (!used.has(n)) return n; return 0; }
 function addSearch(q) {
@@ -2280,7 +2595,7 @@ function renderFile(m) {
     <div class="card"><h3>Archivo abierto</h3>
       <div class="tablebox"><table style="min-width:0"><tbody>
         <tr><td>Ubicación</td><td class="mono">${esc(S.name)}</td></tr>
-        <tr><td>Juego</td><td class="mono">${esc(i.version)} (PES ${i.game})</td></tr>
+        <tr><td>Juego</td><td class="mono">${esc(i.version)} (${i.game === 'FL27' ? 'Football Life 2027' : 'PES ' + i.game})</td></tr>
         <tr><td>Usuario de Windows (SID)</td><td class="mono">${esc(i.sid)}</td></tr>
         <tr><td>Equipos</td><td class="mono">${S.ix.teams.length}</td></tr>
         <tr><td>Jugadores editados</td><td class="mono">${edited} (${locked} protegidos)</td></tr>
@@ -2306,6 +2621,11 @@ function renderFile(m) {
       <div class="row"><button class="btn small" type="button" id="p20Edit">Jugadores de mi EDIT</button><button class="btn small" type="button" id="p20All" ${DBRAW ? '' : 'disabled title="Conectá Player.bin para sumar la base del juego"'}>Todos los jugadores (base del juego + EDIT)</button>
       <button class="btn small" type="button" id="p20Teams">Equipos</button><button class="btn small" type="button" id="p20Tp">Equipos-Jugadores</button></div>
       <p class="note">En Equipos, el césped, la red del arco, el patrocinio y las licencias todavía salen con los valores por defecto de PES2020Editor.</p></div>
+    <div class="card"><h3>Importar desde PES2020Editor</h3>
+      <p class="note">Importa jugadores, equipos y asignaciones. Los ID no cambian; en Equipos-Jugadores, 0 quita la asignación indicada y los jugadores que no aparecen no se modifican. Podés deshacer cada importación.</p>
+      <div class="row"><button class="btn small" type="button" id="p20ImportPlayers">Importar jugadores CSV…</button><button class="btn small" type="button" id="p20ImportTeams">Importar equipos CSV…</button>
+      <button class="btn small" type="button" id="p20ImportAssignments">Importar Equipos-Jugadores CSV…</button>
+      <input type="file" id="p20ImportPlayerFile" hidden accept=".csv,text/csv"><input type="file" id="p20ImportTeamFile" hidden accept=".csv,text/csv"><input type="file" id="p20ImportAssignmentsFile" hidden accept=".csv,text/csv"></div></div>
     ${compareCardHtml()}
     ${S.dir ? `<div class="card"><h3>Respaldos en esta carpeta</h3><div id="baks" class="note">Buscando…</div></div>` : ''}
   <div class="card"><h3>Carpeta del juego</h3>
@@ -2320,6 +2640,12 @@ function renderFile(m) {
   $('p20All').onclick = () => p20ExportPlayers(p20AllIds(true), 'Jugadores.csv');
   $('p20Teams').onclick = () => p20ExportTeams(S.ix.teams, 'Equipos - PES 2021 - Edit.csv');
   $('p20Tp').onclick = p20ExportTeamPlayers;
+  $('p20ImportPlayers').onclick = () => $('p20ImportPlayerFile').click();
+  $('p20ImportTeams').onclick = () => $('p20ImportTeamFile').click();
+  $('p20ImportAssignments').onclick = () => $('p20ImportAssignmentsFile').click();
+  $('p20ImportPlayerFile').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) p20ImportCsv(f, 'jugadores'); };
+  $('p20ImportTeamFile').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) p20ImportCsv(f, 'equipos'); };
+  $('p20ImportAssignmentsFile').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) p20ImportCsv(f, 'asignaciones'); };
   m.querySelectorAll('[data-pesedit]').forEach(b => b.onclick = () => pesSwitch(+b.dataset.pesedit));
   { const a = $('pesAgain'); if (a) a.onclick = () => pesStart(); const o = $('pesOther'); if (o) o.onclick = () => { introShow(); pesPick(); }; }
   $('fDesc').onchange = e => { edit('Nombre del archivo', 'desc', [], () => PesCrypt.setDescription(S.f, e.target.value)); };
@@ -2345,6 +2671,15 @@ async function listBackups() {
 
 // ---------- wiring ----------
 $('fFile').onchange = e => { const f = e.target.files[0]; if (f) openFile(f); e.target.value = ''; };
+$('bFl27Key').onclick = () => $('fFl27Key').click();
+$('fFl27Key').onchange = async e => {
+  const file = e.target.files[0]; e.target.value = '';
+  if (!file) return;
+  try {
+    PesCrypt.setFl27Key(new Uint8Array(await file.arrayBuffer()));
+    toast('Clave FL27 cargada solo en memoria.');
+  } catch (err) { toast(err.message, 6000); }
+};
 $('bNames').onclick = () => $('fNames').click();
 $('bKits').onclick = connectKits;
 document.addEventListener('click', e => { if (e.target.closest('[data-kits]')) connectKits(); });

@@ -8,7 +8,11 @@ const PesData = load('pesdata.js', 'PesData');
 // Los arreglos vienen de otro contexto de vm: se copian para poder compararlos con deepEqual.
 const plain = x => JSON.parse(JSON.stringify(x));
 const PLAYER_SIZE = 0x138, PLAYER_START = 0x7C, TEAM_START = 0x8ED2FC;
-const LAYOUT = { '2021': { teamSize: 0x24C, roster: 0x9D4648, tactics: 0xA09880 }, '2020': { teamSize: 0x210, roster: 0x9ccc04, tactics: 0xa01e3c } };
+const LAYOUT = {
+  '2021': { teamSize: 0x24C, roster: 0x9D4648, tactics: 0xA09880 },
+  '2020': { teamSize: 0x210, roster: 0x9ccc04, tactics: 0xa01e3c },
+  FL27: { teamSize: 0x24C, roster: 0x9D4648, tactics: 0xA09880 },
+};
 
 // Bits que ocupa cada campo, para comprobar que no se pisan entre sí ni se salen de la entrada.
 const span = f => (f.str ? [f.off * 8, f.len * 8] : [f.bit, f.n]);
@@ -159,6 +163,15 @@ for (const game of ['2021', '2020']) {
   });
 }
 
+test('Football Life 2027 usa el layout de equipos de PES 2021', () => {
+  const d = sampleData('FL27');
+  const ix = PesData.index(d, 'FL27');
+  assert.equal(ix.nPlayers, 3);
+  assert.equal(ix.nTeams, 2);
+  assert.equal(ix.teamById.get(500).rosterBase, LAYOUT.FL27.roster + 0x11C);
+  assert.equal(ix.teamById.get(500).tacticsBase, LAYOUT.FL27.tactics);
+});
+
 test('un equipo sin plantel ni táctica no rompe nada', () => {
   const t = { id: 1 };
   const d = new Uint8Array(8);
@@ -167,4 +180,58 @@ test('un equipo sin plantel ni táctica no rompe nada', () => {
   assert.equal(PesData.captainSlot(d, t), -1);
   PesData.setStarter(d, t, 0, 5); PesData.setCaptainSlot(d, t, 5);
   assert.deepEqual([...d], [0, 0, 0, 0, 0, 0, 0, 0]);
+});
+
+test('la táctica repara slots de plantel no listados en huecos libres', () => {
+  const d = sampleData('2021');
+  const t = PesData.index(d, '2021').teamById.get(500);
+  const orderAt = t.tacticsBase + 0x1E4;
+  d.fill(255, orderAt, orderAt + 40);
+  d.set(Array.from({ length: 11 }, (_, i) => i), orderAt);
+  d[orderAt + 3] = 255;
+  d[orderAt + 12] = 3;
+  PesData.setRosterPlayer(d, t, 13, 102);
+
+  const plan = PesData.tacticalOrderPlan(d, t);
+  assert.deepEqual(plain(plan.slots), [13]);
+  assert.deepEqual(plain(plan.indices), [11]);
+  assert.deepEqual(plain(plan.missing), []);
+  assert.equal(PesData.applyTacticalOrderPlan(d, t, plan), true);
+  assert.equal(PesData.tacticalOrder(d, t)[11], 13);
+  assert.equal(PesData.tacticalOrder(d, t)[3], 255, 'no ubica al jugador nuevo entre los titulares');
+});
+
+test('agregar un slot solo se permite si queda un hueco táctico disponible', () => {
+  const d = sampleData('2021');
+  const t = PesData.index(d, '2021').teamById.get(500);
+  const orderAt = t.tacticsBase + 0x1E4;
+  d.set([...Array.from({ length: 39 }, (_, i) => i), 0], orderAt);
+
+  const plan = PesData.tacticalOrderPlan(d, t, [39]);
+  assert.deepEqual(plain(plan.missing), [39]);
+  const before = d.slice(orderAt, orderAt + 40);
+  assert.equal(PesData.applyTacticalOrderPlan(d, t, plan), false);
+  assert.deepEqual([...d.slice(orderAt, orderAt + 40)], [...before]);
+});
+
+test('quitar un jugador compacta referencias tácticas aunque el slot quitado no estuviera listado', () => {
+  const d = sampleData('2021');
+  const t = PesData.index(d, '2021').teamById.get(500);
+  const orderAt = t.tacticsBase + 0x1E4;
+  d.set([0, 2, 3, 255], orderAt);
+  d.fill(255, orderAt + 4, orderAt + 40);
+
+  PesData.removeTacticalRosterSlot(d, t, 1);
+  assert.deepEqual([...d.slice(orderAt, orderAt + 5)], [0, 1, 2, 255, 255]);
+});
+
+test('quitar un jugador conserva huecos tácticos al compactar el plantel', () => {
+  const d = sampleData('2021');
+  const t = PesData.index(d, '2021').teamById.get(500);
+  const orderAt = t.tacticsBase + 0x1E4;
+  d.set([0, 1, 2, 255], orderAt);
+  d.fill(255, orderAt + 4, orderAt + 40);
+
+  PesData.removeTacticalRosterSlot(d, t, 1);
+  assert.deepEqual([...d.slice(orderAt, orderAt + 5)], [0, 1, 255, 255, 255]);
 });
