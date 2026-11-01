@@ -1231,7 +1231,7 @@ function p20StagePlayerRosterChanges(rosterTeam, items) {
     players: PD.roster(S.d, team).filter(x => {
       if (!nations.has(x.pid) || team.id === (rosterTeam && rosterTeam.id)) return false;
       if (rosterTeam && isNat(rosterTeam)) return isNat(team);
-      if (isNat(team)) return true;
+      if (isNat(team)) return tget(team, 'country') !== nations.get(x.pid);
       return !!rosterTeam;
     }),
   })).filter(x => x.players.length);
@@ -1405,8 +1405,8 @@ async function p20ImportCsv(file, kind) {
     if (rosterPlan && rosterPlan.unplaced.length) throw new Error(
       `No se pudieron ubicar ${rosterPlan.unplaced.length} jugadores sin asignarlos a puestos titulares incompatibles. Reducí el CSV o ajustá el 11 inicial antes de importarlo.`);
     const prompt = rosterTeam
-      ? `Se agregarán ${additions.length} jugadores nuevos y se actualizarán ${matched.length} existentes desde el CSV. El plantel de ${tget(rosterTeam, 'name')} se reemplazará por los ${items.length} jugadores del archivo; los ID y los nombres del CSV se conservarán.${playerRosterChanges.count ? ` Se quitarán ${playerRosterChanges.count} membresías anteriores; el CSV no incluye una columna de selección nacional, así que las convocatorias anteriores se quitarán, excepto la selección que sea el destino explícito del archivo.` : ''} Los nuevos se asignan a los puestos titulares vacantes según la variante seleccionada del plan ${S.fplan + 1}; el resto queda de suplente. Los dorsales existentes se mantienen cuando coinciden; para los nuevos se asignan dorsales libres. Se puede deshacer con Ctrl+Z. ¿Continuar?`
-      : `Se actualizarán ${matched.length} ${kind} por ID; ${skipped} fila(s) cuyo ID no existe en el EDIT se omitirán. Los ID no se modifican.${kind === 'jugadores' && playerRosterChanges.count ? ` El CSV no tiene columna de selección nacional: los jugadores listados se quitarán de todas las convocatorias nacionales.` : ''} Se puede deshacer con Ctrl+Z. ¿Continuar?`;
+      ? `Se agregarán ${additions.length} jugadores nuevos y se actualizarán ${matched.length} existentes desde el CSV. El plantel de ${tget(rosterTeam, 'name')} se reemplazará por los ${items.length} jugadores del archivo; los ID y los nombres del CSV se conservarán.${playerRosterChanges.count ? ` Se quitarán ${playerRosterChanges.count} membresías anteriores incompatibles: las convocatorias de un país distinto al Country importado y las membresías de otros clubes. Las convocatorias nacionales compatibles se conservan; este formato no agrega una selección que todavía no exista.` : ''} Los nuevos se asignan a los puestos titulares vacantes según la variante seleccionada del plan ${S.fplan + 1}; el resto queda de suplente. Los dorsales existentes se mantienen cuando coinciden; para los nuevos se asignan dorsales libres. Se puede deshacer con Ctrl+Z. ¿Continuar?`
+      : `Se actualizarán ${matched.length} ${kind} por ID; ${skipped} fila(s) cuyo ID no existe en el EDIT se omitirán. Los ID no se modifican.${kind === 'jugadores' && playerRosterChanges.count ? ` El CSV no especifica selección nacional: se conservarán las convocatorias del mismo país indicado en Country y se quitarán las incompatibles. Para asignar una selección que aún no existe, importá Equipos-Jugadores.csv con su Id National; el valor 0 quita la convocatoria.` : ''} Se puede deshacer con Ctrl+Z. ¿Continuar?`;
     if (!await confirmBox(prompt)) return;
     const regions = kind === 'jugadores'
       ? [...editPlayersRegion(additions.length), ...(rosterTeam ? regT(rosterTeam) : []),
@@ -1458,8 +1458,8 @@ async function p20ImportCsv(file, kind) {
     if (rosterTeam) rebuildTeamOf();
     render();
     toast(rosterTeam
-      ? `Plantel importado: ${items.length} jugadores en ${tget(S.ix.teamById.get(rosterTeam.id), 'name')}; ${additions.length} agregados y ${matched.length} actualizados por ID${playerRosterChanges.count ? `; ${playerRosterChanges.count} membresías anteriores quitadas` : ''}.`
-      : `CSV importado: ${matched.length} ${kind} actualizados; ${skipped} omitidos por ID${kind === 'jugadores' && playerRosterChanges.count ? `; ${playerRosterChanges.count} convocatorias nacionales quitadas` : ''}.`, 6000);
+      ? `Plantel importado: ${items.length} jugadores en ${tget(S.ix.teamById.get(rosterTeam.id), 'name')}; ${additions.length} agregados y ${matched.length} actualizados por ID${playerRosterChanges.count ? `; ${playerRosterChanges.count} membresías incompatibles quitadas (se conservaron las convocatorias nacionales de su mismo país)` : ''}.`
+      : `CSV importado: ${matched.length} ${kind} actualizados; ${skipped} omitidos por ID${kind === 'jugadores' && playerRosterChanges.count ? `; ${playerRosterChanges.count} convocatorias de otro país quitadas` : ''}.`, 6000);
   } catch (e) { toast('No se pudo importar el CSV: ' + e.message, 6000); }
 }
 function fillLazySelect(sel) {

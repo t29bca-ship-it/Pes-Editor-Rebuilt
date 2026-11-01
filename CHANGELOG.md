@@ -2,6 +2,10 @@
 
 Todos los cambios de PES Editor Rebuilt. La misma lista está en la pestaña **Novedades** del editor.
 
+## v0.076 alpha · Convocatorias nacionales CSV por país
+
+- **Planteles de jugadores**. Como el CSV estándar no tiene columna de selección nacional, importar un plantel ya no borra una convocatoria nacional existente si coincide con el `Country` importado; sí quita convocatorias de otros países cuando cambia la nacionalidad. Para asignar o quitar una selección explícitamente, importa `Equipos-Jugadores.csv` después: un `Id National` de `0` quita la convocatoria. Los cambios se pueden deshacer.
+
 ## v0.075 alpha · Asignaciones y selecciones nacionales desde CSV
 
 - **CSV Equipos-Jugadores**. Ahora se pueden importar las columnas `Id Club` e `Id National`: un ID de equipo asigna la pertenencia y `0` la quita. Solo cambian los jugadores listados; se puede deshacer toda la operación.

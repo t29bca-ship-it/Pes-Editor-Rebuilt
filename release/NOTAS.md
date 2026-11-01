@@ -2,19 +2,15 @@
 
 <div align="center">
 
-# Football Life 2027 and CSV squad assignments
+# CSV national-team membership correction
 
 **[▶ Open PES Editor Rebuilt](https://agustinioquino.github.io/Pes-Editor-Rebuilt/)**
 
 </div>
 
-Open and save Football Life 2027 EDIT files by loading your local `FL_key.bin`. The key stays in memory and is never included in the editor or release.
+The standard player CSV has no national-team assignment column. Importing a club roster now preserves a player's existing callup when the squad country matches the imported `Country`, and removes callups for other countries when `Country` changes. It does not create a callup that is not already present.
 
-CSV imports now apply roster assignments consistently:
-
-- Player CSV imports clear national-team callups for listed players because that format has no national-team assignment column. A national-team squad CSV explicitly assigns its named destination; player nationality must match the team country.
-- The `Equipos-Jugadores` CSV can assign club and national-team memberships by ID. A `0` clears that assignment; players omitted from the file are unchanged.
-- Club squad imports remove listed players from their other clubs. Changes can be undone.
+To explicitly assign or clear national-team membership, import `Equipos-Jugadores.csv` after the player CSV. Its `Id National` value sets the assignment; `0` clears it. Players omitted from that file are unchanged. The changes can be undone.
 
 <br>
 
@@ -25,16 +21,12 @@ CSV imports now apply roster assignments consistently:
 
 ### 🇪🇸 Versión en español
 
-# Football Life 2027 y asignaciones CSV
+# Corrección de convocatorias nacionales CSV
 
 **[▶ Abrir PES Editor Rebuilt](https://agustinioquino.github.io/Pes-Editor-Rebuilt/)**
 
 </div>
 
-Abrí y guardá EDIT de Football Life 2027 cargando tu `FL_key.bin` local. La clave queda en memoria y nunca se incluye en el editor ni en la publicación.
+El CSV estándar de jugadores no tiene columna de selección nacional. Al importar un plantel de club, ahora se conserva una convocatoria existente si el país de la selección coincide con `Country`; si cambia la nacionalidad, se quitan las convocatorias de otros países. Esto no crea una convocatoria que no existía.
 
-Las importaciones CSV ahora aplican las asignaciones de plantel de forma coherente:
-
-- Como el CSV de jugadores no tiene columna de selección nacional, los jugadores incluidos se quitan de todas las convocatorias. Si el archivo corresponde explícitamente al plantel de una selección, esa selección queda asignada; la nacionalidad debe coincidir con el país del equipo.
-- El CSV `Equipos-Jugadores` asigna clubes y selecciones por ID. Un `0` quita esa asignación; los jugadores que no aparecen en el archivo quedan sin cambios.
-- Al importar un plantel de club, los jugadores incluidos salen de sus otros clubes. Los cambios se pueden deshacer.
+Para asignar o quitar una selección explícitamente, importa `Equipos-Jugadores.csv` después del CSV de jugadores. `Id National` establece el equipo y `0` lo quita. Los jugadores ausentes del archivo quedan sin cambios. Los cambios se pueden deshacer.
